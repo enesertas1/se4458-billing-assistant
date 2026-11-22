@@ -1,0 +1,15 @@
+{
+  // Azure App Service extension: files that are NOT uploaded when deploying a folder.
+  // node_modules is installed on Azure (SCM_DO_BUILD_DURING_DEPLOYMENT=true);
+  // .env stays local - in Azure the values come from App Settings.
+  "appService.zipIgnorePattern": [
+    "node_modules{,/**}",
+    ".env",
+    "logs{,/**}",
+    "coverage{,/**}",
+    "tests{,/**}",
+    ".vscode{,/**}"
+  ],
+  "appService.defaultWebAppToDeploy": "/subscriptions/82ec80d1-74de-4efd-b11c-d46cc0df2088/resourceGroups/se4458-midterm-rg/providers/Microsoft.Web/sites/se4458-billing-mcp-enes",
+  "appService.deploySubpath": "mcp-server"
+}

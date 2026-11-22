@@ -19,7 +19,7 @@ User ─► AI Agent ◄──► LLM (Gemini / Groq, tool calling)
 | `billing-api/` | Node.js/Express REST API, JWT auth, Swagger, Jest tests | ✅ done |
 | `mcp-server/` | MCP SDK server exposing `search_billing_documentation(query)`, Jest tests | ✅ done |
 | `agent/` | AI Agent: Gemini tool calling + MCP client + REST client, terminal chat, Jest tests | ✅ done |
-| `gateway/` | API Gateway configuration (Azure API Management) | ⏳ next |
+| `gateway/` | Azure API Management: imported API definition + policies | ✅ done |
 | `docs/` | ER diagram, screenshots, tool traces | ⏳ |
 
 ## 1. Billing REST API
@@ -250,6 +250,96 @@ per minute/day; the agent retries once on `429`/`503`. To test without any LLM c
 (scripted fake LLM). Note: on the free tier Google may use prompts to improve its products – only
 fictitious demo data is used here.
 
+## 4. API Gateway – Azure API Management
+
+All REST operations – including every call of the AI agent – go through **Azure API Management
+(Consumption tier)**. The MCP server is called directly by the agent (separate path, as required).
+
+| | |
+|---|---|
+| Gateway base URL | **`https://se4458-billing-gw-enes.azure-api.net`** |
+| Public versioned routes | `https://se4458-billing-gw-enes.azure-api.net/api/v1/...` (API URL suffix `api`, versioning scheme **Path**, version `v1`) |
+| Backend (Billing API on App Service) | `https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net/api/v1` |
+| Definition imported into APIM | [`gateway/billing-api-v1.openapi.yaml`](gateway/billing-api-v1.openapi.yaml) |
+| Policies | [`gateway/policies/api-policy.xml`](gateway/policies/api-policy.xml) (all operations), [`gateway/policies/jwt-validation.xml`](gateway/policies/jwt-validation.xml) (protected operations) |
+
+### Route mappings
+
+| Public route (gateway) | Backend route | APIM operation | Gateway auth |
+|---|---|---|---|
+| `POST /api/v1/auth/login` | `POST /api/v1/auth/login` | `login` | public |
+| `GET /api/v1/bills` | `GET /api/v1/bills` | `query-bill` | public |
+| `GET /api/v1/bills/detailed` | `GET /api/v1/bills/detailed` | `query-bill-detailed` | **JWT validated** |
+| `POST /api/v1/payments` | `POST /api/v1/payments` | `pay-bill` | **JWT validated** |
+| `POST /api/v1/usage` | `POST /api/v1/usage` | `add-usage` | **JWT validated** |
+| `POST /api/v1/bills/calculate` | `POST /api/v1/bills/calculate` | `calculate-bill` | **JWT validated** |
+
+### Authentication at the gateway
+
+The `validate-jwt` policy checks the `Authorization: Bearer <JWT>` header (HS256 signature, issuer
+`se4458-billing-api`, expiry) **before** the request reaches the API. The signing key is stored in
+APIM as a secret *named value* `jwt-signing-key` (Base64 of the API's `JWT_SECRET`), never in the repo.
+The Billing API validates the token again and enforces role and subscriber ownership (defense in depth).
+No subscription key is required (*Subscription required* is off), because Query Bill must stay public.
+
+### Error response example (rejected by the gateway)
+
+```bash
+curl -i "https://se4458-billing-gw-enes.azure-api.net/api/v1/bills/detailed?subscriberNo=5551001&year=2026&month=10"
+```
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+WWW-Authenticate: Bearer
+X-Gateway: azure-api-management
+
+{"error":{"code":"GATEWAY_UNAUTHORIZED","message":"Missing or invalid access token (rejected by the API gateway)","details":{"reason":"...","requestId":"..."}}}
+```
+
+### Protected route through the gateway (success)
+
+```powershell
+$r = Invoke-RestMethod -Method Post -Uri "https://se4458-billing-gw-enes.azure-api.net/api/v1/auth/login" -ContentType "application/json" -Body '{"username":"ayse","password":"Ayse123!"}'
+Invoke-RestMethod -Uri "https://se4458-billing-gw-enes.azure-api.net/api/v1/bills/detailed?subscriberNo=5551001&year=2026&month=10" -Headers @{Authorization = "Bearer $($r.accessToken)"}
+```
+
+### Rate limiting
+
+The Group 2 specification defines no rate limit for its endpoints (the 3-calls-per-day rule belongs to
+Group 1), so no rate-limit policy is configured.
+
+## 5. Cloud deployment (Azure, Sweden Central)
+
+| Component | Azure service | URL |
+|---|---|---|
+| API Gateway | API Management, Consumption | `https://se4458-billing-gw-enes.azure-api.net` |
+| Billing REST API | App Service (Linux, Node 22, Free F1) | `https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net` · [`/swagger`](https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net/swagger) · [`/health`](https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net/health) |
+| MCP server | App Service (Linux, Node 22, Free F1) | `https://se4458-billing-mcp-enes-h9bxhxahdydsh2fc.swedencentral-01.azurewebsites.net/mcp` · [`/health`](https://se4458-billing-mcp-enes-h9bxhxahdydsh2fc.swedencentral-01.azurewebsites.net/health) |
+| Database | Azure Database for PostgreSQL – Flexible Server (B1ms, PostgreSQL 18) | private connection string |
+| AI agent | runs on the user's machine (CLI) | – |
+
+All resources are in one resource group (`se4458-midterm-rg`). Cost: $0 (free App Service F1,
+PostgreSQL free 12-month offer, APIM Consumption first 1M calls free, Gemini free tier).
+
+### How it was deployed
+
+1. **PostgreSQL:** Azure portal → *Azure Database for PostgreSQL flexible server* → Burstable B1ms, 32 GB,
+   public access, "Allow Azure services" on, firewall rule for the developer IP → database `billing`.
+   Tables + demo data: `cd billing-api && npm run db:seed` with `DATABASE_URL` pointing to Azure (`DB_SSL=true`).
+2. **Billing API:** App Service (Linux, Node 22 LTS, F1). App settings: `DATABASE_URL`, `DB_SSL=true`,
+   `JWT_SECRET`, `SCM_DO_BUILD_DURING_DEPLOYMENT=true`. Deployed from VS Code (Azure App Service extension →
+   *Deploy to Web App* → `billing-api/`). Tables are created on startup if missing.
+3. **MCP server:** second App Service on the same F1 plan. App settings: `MCP_API_KEY`,
+   `SCM_DO_BUILD_DURING_DEPLOYMENT=true`. Deployed the same way from `mcp-server/`.
+4. **API Management:** Consumption tier → named value `jwt-signing-key` (secret) → *Add API → OpenAPI*
+   with `gateway/billing-api-v1.openapi.yaml`, URL suffix `api`, version `v1` (Path) → *Subscription required* off
+   → policies from `gateway/policies/`.
+5. **Agent:** `agent/.env` → `BILLING_API_URL=https://se4458-billing-gw-enes.azure-api.net`, `MCP_URL=https://se4458-billing-mcp-enes-h9bxhxahdydsh2fc.swedencentral-01.azurewebsites.net/mcp`, `MCP_API_KEY=<key>`.
+
+The App Service F1 plan sleeps after ~20 minutes without traffic; the first request after that can take
+20–30 s.
+
 ## Assumptions
 
 1. **Add Usage units:** each call adds exactly 10 minutes (PHONE) or 1 MB (INTERNET), as specified. Seed data inserts aggregated monthly usage directly (`source = 'SEED'`) because 35 GB would need 35,000 API calls.
@@ -264,3 +354,4 @@ fictitious demo data is used here.
 10. **Policy interpretation (MCP):** the guide is split by its own section numbers so answers can cite "Section 3.2". The guide is treated as general policy only; live amounts always come from the Billing API (guide §9).
 11. **Agent date handling:** if the user gives no year, the agent uses the most recent such month that is not in the future (today's date is put in the system prompt).
 12. **Agent identity:** only SUBSCRIBER accounts can use the chat; ADMIN operations (Add Usage, Calculate Bill) are not exposed to the LLM.
+13. **Deployment:** the agent runs locally as a CLI (a chat UI is allowed by the assignment); all servers it uses (gateway, API, MCP, database) run in Azure.

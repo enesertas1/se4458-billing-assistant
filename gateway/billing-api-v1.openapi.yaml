@@ -1,0 +1,84 @@
+openapi: 3.0.3
+# Definition imported into Azure API Management (APIM).
+# APIM settings: API URL suffix = "api", versioning scheme = Path, version identifier = "v1"
+#   -> public routes:  https://<gateway>.azure-api.net/api/v1/<path below>
+#   -> backend:        servers[0].url + <path below>
+info:
+  title: Mobile Provider Billing API
+  version: v1
+  description: Billing REST API routed through Azure API Management (SE4458 Midterm, Group 2).
+servers:
+  - url: https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net/api/v1
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    subscriberNo: { name: subscriberNo, in: query, required: true, schema: { type: string } }
+    year: { name: year, in: query, required: true, schema: { type: integer } }
+    month: { name: month, in: query, required: true, schema: { type: integer } }
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      summary: Login (public) - returns a JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { username: { type: string }, password: { type: string } } }
+      responses: { '200': { description: Token issued }, '401': { description: Invalid credentials } }
+  /usage:
+    post:
+      operationId: add-usage
+      summary: Add Usage (JWT, ADMIN)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { subscriberNo: { type: string }, year: { type: integer }, month: { type: integer }, usageType: { type: string, enum: [PHONE, INTERNET] } }
+      responses: { '201': { description: Usage recorded } }
+  /bills/calculate:
+    post:
+      operationId: calculate-bill
+      summary: Calculate Bill (JWT, ADMIN)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { subscriberNo: { type: string }, year: { type: integer }, month: { type: integer } } }
+      responses: { '200': { description: Re-calculated }, '201': { description: Created } }
+  /bills:
+    get:
+      operationId: query-bill
+      summary: Query Bill (public)
+      parameters: [{ $ref: '#/components/parameters/subscriberNo' }, { $ref: '#/components/parameters/year' }, { $ref: '#/components/parameters/month' }]
+      responses: { '200': { description: Bill summary }, '404': { description: Bill not found } }
+  /bills/detailed:
+    get:
+      operationId: query-bill-detailed
+      summary: Query Bill Detailed (JWT, paging)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/subscriberNo' }
+        - { $ref: '#/components/parameters/year' }
+        - { $ref: '#/components/parameters/month' }
+        - { name: page, in: query, required: false, schema: { type: integer } }
+        - { name: pageSize, in: query, required: false, schema: { type: integer } }
+      responses: { '200': { description: Detailed bill } }
+  /payments:
+    post:
+      operationId: pay-bill
+      summary: Pay Bill (JWT)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { subscriberNo: { type: string }, year: { type: integer }, month: { type: integer }, amount: { type: number }, transactionId: { type: string } }
+      responses: { '201': { description: Payment recorded } }

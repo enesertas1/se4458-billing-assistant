@@ -1,0 +1,33 @@
+<!--
+  Operation-level policy for the PROTECTED operations:
+    add-usage, calculate-bill, query-bill-detailed, pay-bill
+  The gateway validates the JWT (signature HS256, issuer, expiry) BEFORE the request reaches the
+  Billing API. The API validates it again and also checks role / subscriber ownership.
+
+  {{jwt-signing-key}} is an APIM "Named value" (type: Secret) = Base64 of the API's JWT_SECRET.
+-->
+<policies>
+    <inbound>
+        <base />
+        <validate-jwt header-name="Authorization" require-scheme="Bearer"
+                      failed-validation-httpcode="401"
+                      failed-validation-error-message="Missing or invalid access token"
+                      require-expiration-time="true" require-signed-tokens="true">
+            <issuer-signing-keys>
+                <key>{{jwt-signing-key}}</key>
+            </issuer-signing-keys>
+            <issuers>
+                <issuer>se4458-billing-api</issuer>
+            </issuers>
+        </validate-jwt>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
