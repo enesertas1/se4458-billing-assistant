@@ -1,0 +1,266 @@
+openapi: 3.0.3
+info:
+  title: Mobile Provider Billing API
+  version: 1.0.0
+  description: |
+    SE4458 Midterm 1 – Group 2 (AI Billing Support Assistant).
+    All public routes are versioned under `/api/v1` and are meant to be called **through the API Gateway**.
+
+    **Authentication:** `POST /api/v1/auth/login` returns a JWT. Send it as `Authorization: Bearer <token>`.
+    - `SUBSCRIBER` tokens can only access their own subscriber number.
+    - `ADMIN` tokens can run Add Usage / Calculate Bill and access any subscriber.
+
+    **Errors** always have the shape `{ "error": { "code", "message", "details?" } }`.
+
+    Demo users (from seed): `ayse / Ayse123!` (5551001), `mehmet / Mehmet123!` (5551002),
+    `zeynep / Zeynep123!` (5551003), `admin / Admin123!`.
+servers:
+  - url: /
+    description: This server
+tags:
+  - name: Auth
+  - name: Usage
+  - name: Bills
+  - name: Payments
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    SubscriberNoQ: { name: subscriberNo, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4,20}$' }, example: '5551001' }
+    YearQ: { name: year, in: query, required: true, schema: { type: integer, minimum: 2000, maximum: 2100 }, example: 2026 }
+    MonthQ: { name: month, in: query, required: true, schema: { type: integer, minimum: 1, maximum: 12 }, example: 10 }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: BILL_NOT_FOUND }
+            message: { type: string }
+            details: {}
+    Period:
+      type: object
+      required: [subscriberNo, year, month]
+      properties:
+        subscriberNo: { type: string, example: '5551001' }
+        year: { type: integer, example: 2026 }
+        month: { type: integer, example: 10 }
+    BillSummary:
+      type: object
+      properties:
+        subscriberNo: { type: string, example: '5551001' }
+        year: { type: integer, example: 2026 }
+        month: { type: integer, example: 10 }
+        currency: { type: string, example: USD }
+        billTotal: { type: number, example: 80 }
+        paidAmount: { type: number, example: 0 }
+        remainingBalance: { type: number, example: 80 }
+        status: { type: string, enum: [UNPAID, PARTIALLY_PAID, PAID] }
+        dueDate: { type: string, format: date, example: '2026-11-15' }
+        calculatedAt: { type: string, format: date-time }
+  responses:
+    BadRequest: { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unauthorized: { description: Missing / invalid JWT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Wrong role or not your subscriber account, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: Subscriber or bill not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and receive a JWT access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, example: ayse }
+                password: { type: string, example: Ayse123! }
+      responses:
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  tokenType: { type: string, example: Bearer }
+                  expiresIn: { type: integer, example: 3600 }
+                  role: { type: string, enum: [SUBSCRIBER, ADMIN] }
+                  subscriberNo: { type: string, nullable: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/usage:
+    post:
+      tags: [Usage]
+      summary: Add Usage (+10 minutes PHONE or +1 MB INTERNET)
+      description: Auth required (ADMIN). Each call records one usage event for the given month.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Period'
+                - type: object
+                  required: [usageType]
+                  properties:
+                    usageType: { type: string, enum: [PHONE, INTERNET] }
+      responses:
+        '201':
+          description: Usage recorded
+          content:
+            application/json:
+              example:
+                transactionStatus: SUCCESS
+                usageId: 42
+                subscriberNo: '5551001'
+                year: 2026
+                month: 11
+                usageType: PHONE
+                amountAdded: 10
+                unit: minutes
+                periodTotals: { phoneMinutes: 10, internetMb: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/bills/calculate:
+    post:
+      tags: [Bills]
+      summary: Calculate Bill and store it
+      description: |
+        Auth required (ADMIN). Phone: first 1,000 minutes free, then $10 per started 1,000-minute block.
+        Internet: $50 up to 20 GB, then $10 per started 10 GB block (1 GB = 1,000 MB).
+        Re-calculating an existing bill updates the charges but keeps the amount already paid.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Period' } } }
+      responses:
+        '201':
+          description: Bill created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactionStatus: { type: string, example: SUCCESS }
+                  created: { type: boolean }
+                  bill: { $ref: '#/components/schemas/BillSummary' }
+        '200': { description: Existing bill re-calculated (same body as 201) }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/bills:
+    get:
+      tags: [Bills]
+      summary: Query Bill (no authentication, no paging)
+      parameters:
+        - $ref: '#/components/parameters/SubscriberNoQ'
+        - $ref: '#/components/parameters/YearQ'
+        - $ref: '#/components/parameters/MonthQ'
+      responses:
+        '200':
+          description: Stored bill
+          content: { application/json: { schema: { $ref: '#/components/schemas/BillSummary' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/bills/detailed:
+    get:
+      tags: [Bills]
+      summary: Query Bill Detailed (auth + paging)
+      description: Returns totals, usage, charge breakdown and a paged list of usage records.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/SubscriberNoQ'
+        - $ref: '#/components/parameters/YearQ'
+        - $ref: '#/components/parameters/MonthQ'
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Detailed bill
+          content:
+            application/json:
+              example:
+                subscriberNo: '5551001'
+                year: 2026
+                month: 10
+                currency: USD
+                billTotal: 80
+                paidAmount: 0
+                remainingBalance: 80
+                status: UNPAID
+                dueDate: '2026-11-15'
+                usage: { phoneMinutes: 1350, internetMb: 35000, internetGb: 35 }
+                charges:
+                  - { item: PHONE, description: 'First 1,000 minutes free; 1 extra 1,000-minute block(s) x $10', amount: 10 }
+                  - { item: INTERNET, description: '$50 base (up to 20 GB) + 2 extra 10 GB block(s) x $10', amount: 70 }
+                usageRecords:
+                  page: 1
+                  pageSize: 20
+                  totalItems: 6
+                  totalPages: 1
+                  items:
+                    - { id: 7, usageType: PHONE, amount: 450, unit: minutes, source: SEED, createdAt: '2026-11-01T10:00:00.000Z' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/payments:
+    post:
+      tags: [Payments]
+      summary: Pay Bill (simulated partial or full payment)
+      description: |
+        Auth required (owner or ADMIN). No real card processing.
+        Rejects duplicate transaction IDs (409), amounts above the remaining balance (422) and already paid bills (409).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Period'
+                - type: object
+                  required: [amount, transactionId]
+                  properties:
+                    amount: { type: number, example: 40 }
+                    transactionId: { type: string, example: TX-20261122-0001 }
+      responses:
+        '201':
+          description: Payment recorded
+          content:
+            application/json:
+              example:
+                paymentStatus: SUCCESS
+                transactionId: TX-20261122-0001
+                subscriberNo: '5551001'
+                year: 2026
+                month: 10
+                currency: USD
+                paidAmount: 40
+                totalPaid: 40
+                remainingBalance: 40
+                billStatus: PARTIALLY_PAID
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Duplicate transaction ID or bill already paid, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: Amount exceeds remaining balance, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

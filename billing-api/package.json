@@ -1,0 +1,45 @@
+{
+  "name": "billing-api",
+  "version": "1.0.0",
+  "description": "SE4458 Group 2 - Mobile Provider Billing REST API",
+  "main": "src/server.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "jest --verbose",
+    "test:coverage": "jest --coverage",
+    "db:migrate": "node src/db/migrate.js",
+    "db:seed": "node src/db/seed.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "js-yaml": "^5.5.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1",
+    "swagger-ui-express": "^5.0.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2",
+    "supertest": "^7.3.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "helpers.js"
+    ]
+  }
+}
