@@ -1,0 +1,27 @@
+{
+  "name": "billing-agent",
+  "version": "1.0.0",
+  "description": "SE4458 Group 2 - AI Agent (Gemini tool calling + MCP client + REST via gateway)",
+  "main": "src/cli.js",
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "jest --verbose"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^3.6.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "dotenv": "^18.0.10"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "jest": {
+    "testEnvironment": "node"
+  }
+}

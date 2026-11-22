@@ -18,8 +18,8 @@ User ─► AI Agent ◄──► LLM (Gemini / Groq, tool calling)
 |---|---|---|
 | `billing-api/` | Node.js/Express REST API, JWT auth, Swagger, Jest tests | ✅ done |
 | `mcp-server/` | MCP SDK server exposing `search_billing_documentation(query)`, Jest tests | ✅ done |
+| `agent/` | AI Agent: Gemini tool calling + MCP client + REST client, terminal chat, Jest tests | ✅ done |
 | `gateway/` | API Gateway configuration (Azure API Management) | ⏳ next |
-| `agent/` | AI Agent (LLM tool calling + MCP client + REST client) and chat UI | ⏳ |
 | `docs/` | ER diagram, screenshots, tool traces | ⏳ |
 
 ## 1. Billing REST API
@@ -184,6 +184,72 @@ Output of `npm run demo -- --save` is in [`docs/mcp-retrieval-demo.md`](docs/mcp
 | 2 | Can I pay only part of my bill? | 8.3 Can I pay only part of my bill? · 5.1 Full and partial payments · 5.3 Payment result |
 | 3 | How do I dispute a charge? | 8.4 How can I dispute a charge? · 7.1 Dispute window · 7.2 Information required |
 
+## 3. AI Agent
+
+Folder: [`agent/`](agent). Terminal chat (`npm start`). LLM: **Google Gemini** (`gemini-3.1-flash-lite`,
+free tier) through the official `@google/genai` SDK with **real function calling** – there is no
+keyword routing; the model decides which tools to call.
+
+### Execution workflow
+
+```
+user question
+  → LLM (Gemini) receives the question + 4 tool declarations, selects tool(s)
+  → Agent executes the calls:  MCP tool → MCP server            (direct, not via gateway)
+                               REST tools → API Gateway → Billing API → PostgreSQL
+  → tool results are sent back to the LLM (functionResponse)
+  → repeat while the LLM asks for more tools (max 6 rounds)
+  → grounded final answer, with guide section references (e.g. "§3.2")
+```
+
+The LLM never calls a backend itself; [`src/agent.js`](agent/src/agent.js) executes every call.
+
+### Tools given to the LLM ([`src/tools.js`](agent/src/tools.js))
+
+| Tool | Parameters | Executed as |
+|---|---|---|
+| `search_billing_documentation` | `query`, `maxResults?` | MCP `tools/call` on the MCP server |
+| `query_bill` | `month`, `year` | `GET /api/v1/bills` via gateway |
+| `query_bill_detailed` | `month`, `year`, `page?` | `GET /api/v1/bills/detailed` via gateway, with JWT |
+| `pay_bill` | `month`, `year`, `amount` | user confirmation → `POST /api/v1/payments` via gateway, with JWT |
+
+### Security rules (enforced in code, not only in the prompt)
+
+- **Identity comes from login only.** The user logs in at start (`POST /api/v1/auth/login`); the
+  subscriber number and JWT are stored in the session. **No tool has a `subscriberNo` parameter**;
+  if the model still sends one it is dropped and logged as `ignoredArgs`. A number typed in the chat
+  can therefore never reach another subscriber's data (and the API would also answer `403`).
+- **Explicit payment confirmation.** `pay_bill` never pays directly: the agent shows subscriber,
+  period and amount and waits for the user to type `yes`. Declined → `NOT_SUBMITTED` is returned
+  to the LLM and nothing is sent to the API.
+- **Idempotency.** The agent generates the `transactionId`; the API rejects duplicates (`409`).
+
+### Tool trace
+
+For every question the terminal prints the trace (LLM tool selection → each tool call with
+channel, request and result summary → final answer). The full trace is also written to
+`agent/logs/session-<time>.md` and `.json` (tool names, inputs, raw results, final answer).
+
+### Run
+
+Requirements: Node.js **22+**, a Gemini API key, Billing API and MCP server available.
+
+```bash
+cd agent
+npm install
+copy .env.example .env       # set GEMINI_API_KEY, BILLING_API_URL (gateway URL), MCP_URL (or empty = local stdio)
+npm start                    # log in e.g. ayse / Ayse123!
+npm test                     # 19 tests with a scripted fake LLM – no network / API key needed
+```
+
+### LLM cost
+
+Gemini API **free tier** (no billing account) – cost **$0**. The model is configurable with `GEMINI_MODEL`. A demo session uses a few thousand
+tokens per question (system prompt + tool declarations + results). Free-tier limits are per project
+per minute/day; the agent retries once on `429`/`503`. To test without any LLM cost, run `npm test`
+(scripted fake LLM). Note: on the free tier Google may use prompts to improve its products – only
+fictitious demo data is used here.
+
 ## Assumptions
 
 1. **Add Usage units:** each call adds exactly 10 minutes (PHONE) or 1 MB (INTERNET), as specified. Seed data inserts aggregated monthly usage directly (`source = 'SEED'`) because 35 GB would need 35,000 API calls.
@@ -196,3 +262,5 @@ Output of `npm run demo -- --save` is in [`docs/mcp-retrieval-demo.md`](docs/mcp
 8. **Due date** is shown as 15 days after the end of the billing month (guide 6.1).
 9. **Paging** in Query Bill Detailed is applied to the list of usage records; `pageSize` max 100.
 10. **Policy interpretation (MCP):** the guide is split by its own section numbers so answers can cite "Section 3.2". The guide is treated as general policy only; live amounts always come from the Billing API (guide §9).
+11. **Agent date handling:** if the user gives no year, the agent uses the most recent such month that is not in the future (today's date is put in the system prompt).
+12. **Agent identity:** only SUBSCRIBER accounts can use the chat; ADMIN operations (Add Usage, Calculate Bill) are not exposed to the LLM.
