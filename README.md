@@ -5,12 +5,17 @@ search the billing guide through an **MCP Server**, call the **Billing REST API*
 **API Gateway**, or both.
 
 ```
-User ─► AI Agent ◄──► LLM (Gemini / Groq, tool calling)
+User ─► AI Agent ◄──► LLM (Google Gemini, tool calling)
           │
           ├─► MCP Client ─► MCP Server ─► indexed Mobile_Provider_Billing_Guide.md
           │
           └─► API Gateway (/api/v1/...) ─► Billing REST API ─► PostgreSQL
 ```
+
+**Live system (Azure):** gateway `https://se4458-billing-gw-enes.azure-api.net/api/v1` ·
+[Swagger UI](https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net/swagger) ·
+[demo video](https://drive.google.com/file/d/1qFDvALOocIUdVyUTjiBqruat5RsREf8Y/view?usp=sharing) · evidence: [section 6](#6-demo-video-and-evidence) ·
+submission checklist: [section 7](#7-submission-checklist)
 
 ## Repository layout
 
@@ -20,7 +25,7 @@ User ─► AI Agent ◄──► LLM (Gemini / Groq, tool calling)
 | `mcp-server/` | MCP SDK server exposing `search_billing_documentation(query)`, Jest tests | ✅ done |
 | `agent/` | AI Agent: Gemini tool calling + MCP client + REST client, terminal chat, Jest tests | ✅ done |
 | `gateway/` | Azure API Management: imported API definition + policies | ✅ done |
-| `docs/` | ER diagram, screenshots, tool traces | ⏳ |
+| `docs/` | ER diagram, screenshots, tool traces, MCP retrieval results | ✅ done |
 
 ## 1. Billing REST API
 
@@ -64,17 +69,21 @@ See [`docs/ER-diagram.md`](docs/ER-diagram.md).
 
 ### Run locally
 
-Requirements: Node.js 20+. No local database is needed: the API connects to the
-PostgreSQL server on Azure (Azure Database for PostgreSQL – Flexible Server).
+Requirements: Node.js 20+ and any PostgreSQL server (local or cloud). In the deployed system the
+API uses Azure Database for PostgreSQL; for your own run use your own PostgreSQL.
 
 ```bash
 cd billing-api
 cp .env.example .env                 # Windows: copy .env.example .env
-# edit .env -> DATABASE_URL = Azure PostgreSQL connection string, DB_SSL=true
+# edit .env -> DATABASE_URL = your PostgreSQL connection string
+#              DB_SSL=true for Azure / cloud PostgreSQL, DB_SSL=false for a local server
+#              JWT_SECRET = any long random string
 npm install
 npm run db:seed                      # creates tables + demo data
 npm start                            # http://localhost:3000/swagger
 ```
+
+See also [How to reproduce the results](#how-to-reproduce-the-results-for-the-instructor).
 
 ### Unit tests
 
@@ -86,6 +95,7 @@ npm test
 Tests use an in-memory repository, so they need **no database, no cloud and no LLM**.
 Every operation has success and failure/edge-case tests (validation, 401/403, duplicate
 transaction, overpayment, paging, re-calculation, pricing boundaries).
+Result: **44 passed** – see [section 6](#unit-test-results) for all test suites.
 
 ### Test data (created by `npm run db:seed`)
 
@@ -176,7 +186,8 @@ npm run demo             # real MCP client -> stdio server -> runs the 3 retriev
 
 ### Three retrieval tests
 
-Output of `npm run demo -- --save` is in [`docs/mcp-retrieval-demo.md`](docs/mcp-retrieval-demo.md).
+Run with a real MCP client against the **deployed** server (Streamable HTTP). Output of `npm run demo -- --save` is in
+[`docs/mcp-retrieval-demo.md`](docs/mcp-retrieval-demo.md), screenshot: [`11-mcp-retrieval.png`](docs/screenshots/11-mcp-retrieval.png).
 
 | # | Query | Top sections returned |
 |---|---|---|
@@ -229,6 +240,7 @@ The LLM never calls a backend itself; [`src/agent.js`](agent/src/agent.js) execu
 For every question the terminal prints the trace (LLM tool selection → each tool call with
 channel, request and result summary → final answer). The full trace is also written to
 `agent/logs/session-<time>.md` and `.json` (tool names, inputs, raw results, final answer).
+The trace of the demo session (all scenarios) is in [`docs/agent-trace-demo.md`](docs/agent-trace-demo.md).
 
 ### Run
 
@@ -291,11 +303,20 @@ curl -i "https://se4458-billing-gw-enes.azure-api.net/api/v1/bills/detailed?subs
 ```http
 HTTP/1.1 401 Unauthorized
 Content-Type: application/json
+Cache-Control: private
 WWW-Authenticate: Bearer
-X-Gateway: azure-api-management
 
-{"error":{"code":"GATEWAY_UNAUTHORIZED","message":"Missing or invalid access token (rejected by the API gateway)","details":{"reason":"...","requestId":"..."}}}
+{
+  "error": {
+    "code": "GATEWAY_UNAUTHORIZED",
+    "message": "Missing or invalid access token (rejected by the API gateway)",
+    "details": { "reason": "JWT not present.", "requestId": "c17535ef-79f6-446a-8af6-9583895b156f" }
+  }
+}
 ```
+
+Screenshot: [`07-gateway-401.png`](docs/screenshots/07-gateway-401.png). The request never reached the Billing API.
+Successful responses that pass the gateway carry the `X-Gateway: azure-api-management` header.
 
 ### Protected route through the gateway (success)
 
@@ -339,6 +360,128 @@ PostgreSQL free 12-month offer, APIM Consumption first 1M calls free, Gemini fre
 
 The App Service F1 plan sleeps after ~20 minutes without traffic; the first request after that can take
 20–30 s.
+
+## How to reproduce the results (for the instructor)
+
+Requirements: Node.js 22+ (for the agent; 20+ for the API and MCP server).
+Demo users and data: see [Test data](#test-data-created-by-npm-run-dbseed).
+
+**1. Unit tests – no keys, no cloud, no LLM needed**
+
+```bash
+cd billing-api && npm install && npm test     # 44 tests
+cd ../mcp-server && npm install && npm test   # 23 tests
+cd ../agent && npm install && npm test        # 19 tests (scripted fake LLM)
+```
+
+**2. Live REST API through the gateway (Azure)**
+
+```bash
+# public route
+curl "https://se4458-billing-gw-enes.azure-api.net/api/v1/bills?subscriberNo=5551001&year=2026&month=10"
+# protected route without token -> 401 from the gateway
+curl -i "https://se4458-billing-gw-enes.azure-api.net/api/v1/bills/detailed?subscriberNo=5551001&year=2026&month=10"
+# login, then call the protected route with the token
+curl -X POST "https://se4458-billing-gw-enes.azure-api.net/api/v1/auth/login" -H "Content-Type: application/json" -d '{"username":"ayse","password":"Ayse123!"}'
+curl "https://se4458-billing-gw-enes.azure-api.net/api/v1/bills/detailed?subscriberNo=5551001&year=2026&month=10" -H "Authorization: Bearer <accessToken>"
+```
+
+(Windows PowerShell versions of these commands are in [section 4](#protected-route-through-the-gateway-success).)
+If the App Service was idle, the first request can take 20–30 s.
+
+**3. AI agent against the live system – needs only your own free Gemini API key**
+
+```bash
+cd agent
+cp .env.example .env      # Windows: copy .env.example .env
+# edit .env:
+#   GEMINI_API_KEY=<your key from https://aistudio.google.com>
+#   BILLING_API_URL=https://se4458-billing-gw-enes.azure-api.net
+#   MCP_URL=          (leave empty: the agent starts the MCP server from ../mcp-server locally over stdio;
+#                      the deployed MCP server is protected with a private API key)
+npm start                 # log in as ayse / Ayse123!
+```
+
+Then ask the demo questions from [section 6](#agent-scenarios-tool-trace). Each answer prints its tool trace,
+and the full trace is saved in `agent/logs/`. Run `npm install` in `mcp-server/` first (step 1).
+
+**4. Three MCP retrieval tests**
+
+```bash
+cd mcp-server
+npm run demo              # real MCP client -> local MCP server (stdio) -> 3 queries
+```
+
+**5. Optional: run the Billing API yourself** with your own PostgreSQL, see [Run locally](#run-locally).
+
+**Resetting the demo data:** payments made during testing change the balances. The deployed data can be
+reset by the owner with `npm run db:seed`; the expected initial state is in the test-data table.
+
+## 6. Demo video and evidence
+
+### Demo video
+
+**Video:** [SE4458_demonstration_video.mp4 (Google Drive)](https://drive.google.com/file/d/1qFDvALOocIUdVyUTjiBqruat5RsREf8Y/view?usp=sharing) (≈3.5 min). It shows the GitHub repository, the Azure deployment and
+Swagger, a unit-test run, a protected gateway route rejected with 401, and the AI agent scenarios
+(MCP only, REST only, combined, declined and confirmed payment, privacy).
+
+### Unit test results
+
+| Suite | Command | Result | Evidence |
+|---|---|---|---|
+| Billing API | `cd billing-api && npm test` | **44 passed** | [`01-tests-billing-api.png`](docs/screenshots/01-tests-billing-api.png) |
+| MCP server | `cd mcp-server && npm test` | **23 passed** | [`02-tests-mcp-server.png`](docs/screenshots/02-tests-mcp-server.png) |
+| AI agent | `cd agent && npm test` | **19 passed** | [`03-tests-agent.png`](docs/screenshots/03-tests-agent.png) |
+
+All suites run without cloud resources or a live LLM (in-memory repository, in-memory MCP transport,
+scripted fake LLM).
+
+### Agent scenarios (tool trace)
+
+Full trace: [`docs/agent-trace-demo.md`](docs/agent-trace-demo.md) (recorded with the deployed system).
+
+| Scenario | Question | Tools chosen by the LLM |
+|---|---|---|
+| MCP only | How much does extra internet cost? | `search_billing_documentation` → §3.2 |
+| REST only | What is my October bill? | `query_bill` (via gateway) |
+| Combined | Why is my October bill higher? | `query_bill_detailed` (via gateway, JWT) + `search_billing_documentation` |
+| Payment declined | Pay 20 dollars of my October bill → *no* | `pay_bill` → DECLINED, nothing sent ([screenshot](docs/screenshots/12-agent-payment-declined.png)) |
+| **Confirmed payment** | Pay 20 dollars of my October bill → *yes* | `pay_bill` → CONFIRMED, `POST /api/v1/payments` → SUCCESS |
+| Privacy | Show the October bill of subscriber 5551002 | no tool call – only the logged-in account is accessible |
+
+### Screenshots
+
+| # | What it shows |
+|---|---|
+| [01](docs/screenshots/01-tests-billing-api.png) · [02](docs/screenshots/02-tests-mcp-server.png) · [03](docs/screenshots/03-tests-agent.png) | Unit test runs (44 / 23 / 19 passed) |
+| [04](docs/screenshots/04-azure-resources.png) | Azure resource group: PostgreSQL, App Service plan, API, MCP server, API Management |
+| [05](docs/screenshots/05-swagger.png) | Swagger UI of the deployed Billing API |
+| [06](docs/screenshots/06-mcp-health.png) | Deployed MCP server health: 26 chunks indexed once at startup |
+| [07](docs/screenshots/07-gateway-401.png) | Protected gateway route without token → 401 `GATEWAY_UNAUTHORIZED` |
+| [08](docs/screenshots/08-gateway-protected-ok.png) | Login through the gateway, then the protected route with JWT → detailed bill |
+| [09](docs/screenshots/09-apim-routes.png) | API Management: versioned API `v1` and its operations |
+| [10](docs/screenshots/10-apim-jwt-policy.png) | API Management: `validate-jwt` policy on a protected operation |
+| [11](docs/screenshots/11-mcp-retrieval.png) | Three MCP retrieval tests against the deployed MCP server |
+| [12](docs/screenshots/12-agent-payment-declined.png) | Agent payment confirmation, user declines → nothing paid |
+
+## 7. Submission checklist
+
+| Requirement | Where |
+|---|---|
+| Source code | `billing-api/`, `mcp-server/`, `agent/`, `gateway/` |
+| Swagger / API documentation | [`billing-api/src/openapi.yaml`](billing-api/src/openapi.yaml), live [Swagger UI](https://se4458-billing-api-enes-c6czbfepexbrfxe9.swedencentral-01.azurewebsites.net/swagger) |
+| ER diagram / data model | [`docs/ER-diagram.md`](docs/ER-diagram.md) |
+| Gateway URL and route mappings | [section 4](#4-api-gateway--azure-api-management) |
+| MCP tool schema and indexing approach | [section 2](#2-mcp-server--billing-guide-search) |
+| Cloud deployment instructions / URLs | [section 5](#5-cloud-deployment-azure-sweden-central) |
+| Assumptions | [Assumptions](#assumptions) |
+| Test data and reproducibility | [Test data](#test-data-created-by-npm-run-dbseed), [How to reproduce](#how-to-reproduce-the-results-for-the-instructor) |
+| Unit tests (success + failure per endpoint) and how to run them | [Unit test results](#unit-test-results) |
+| Three agent scenarios + confirmed payment (tool trace) | [`docs/agent-trace-demo.md`](docs/agent-trace-demo.md) |
+| Three MCP retrieval tests | [`docs/mcp-retrieval-demo.md`](docs/mcp-retrieval-demo.md) |
+| Protected gateway route + error response | [section 4](#error-response-example-rejected-by-the-gateway), screenshots 07–10 |
+| LLM cost / free tier | [LLM cost](#llm-cost) |
+| Demo video | [section 6](#demo-video) |
 
 ## Assumptions
 

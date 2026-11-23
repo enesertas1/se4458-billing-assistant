@@ -1,7 +1,7 @@
 # MCP retrieval tests
 
-Transport: stdio (local process)  
-Date: 2026-11-22T19:23:09.073Z
+Transport: Streamable HTTP https://se4458-billing-mcp-enes-h9bxhxahdydsh2fc.swedencentral-01.azurewebsites.net/mcp  
+Date: 2026-11-23T15:08:50.820Z
 
 Tools exposed by the server: `search_billing_documentation`
 
